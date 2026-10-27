@@ -1,0 +1,30 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+
+# macOS system files
+.DS_Store
+
+# IDE and editors
+.vscode/
+.idea/
+
+# Streamlit config / cache
+.streamlit/
+
+# Training checkpoints or temp dumps if any
+*.tmp
+
+# Dataset (download from TrashNet, see README)
+dataset-resized/
+
+# Local tooling
+.claude/
+.ipynb_checkpoints/
