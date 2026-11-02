@@ -72,6 +72,12 @@ CLASS_WEIGHT_MULTIPLIERS = {
 #   - AdamW weight decay and label smoothing to curb overfitting of a larger
 #     model and soften the 3 mislabelled duplicate images
 #   - softer trash weight (v1 over-predicted trash: 100% recall, 33% precision)
+# v3 = v2 made stable. In v2, val accuracy swung 35% ↔ 76% between epochs and
+#   early stopping kept a lucky spike at epoch 32 of 80, before the cosine LR
+#   had decayed. v3 runs the full cosine schedule with no early stopping, keeps
+#   the final weights, and uses BatchNorm momentum 0.9 so the moving statistics
+#   keep up with the weights.
+# early_stopping_patience=None disables early stopping.
 TRAINING_RECIPES = {
     "v1": {
         "max_epochs": MAX_EPOCHS,
@@ -81,6 +87,7 @@ TRAINING_RECIPES = {
         "lr_schedule": "plateau",
         "label_smoothing": 0.0,
         "early_stopping_patience": EARLY_STOPPING_PATIENCE,
+        "bn_momentum": 0.99,
         "class_weight_multipliers": CLASS_WEIGHT_MULTIPLIERS,
     },
     "v2": {
@@ -91,6 +98,18 @@ TRAINING_RECIPES = {
         "lr_schedule": "cosine",
         "label_smoothing": 0.1,
         "early_stopping_patience": 15,
+        "bn_momentum": 0.99,
+        "class_weight_multipliers": {**CLASS_WEIGHT_MULTIPLIERS, "trash": 0.5},
+    },
+    "v3": {
+        "max_epochs": 100,
+        "learning_rate": 1e-3,
+        "optimizer": "adamw",
+        "weight_decay": 1e-4,
+        "lr_schedule": "cosine",
+        "label_smoothing": 0.1,
+        "early_stopping_patience": None,
+        "bn_momentum": 0.9,
         "class_weight_multipliers": {**CLASS_WEIGHT_MULTIPLIERS, "trash": 0.5},
     },
 }

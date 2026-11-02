@@ -75,6 +75,7 @@ def build_model_a(
     input_shape: tuple = INPUT_SHAPE,
     num_classes: int = NUM_CLASSES,
     dropout_rate: float = 0.3,
+    bn_momentum: float = 0.99,
     name: str = "model_a_small_cnn",
 ) -> keras.Model:
     """
@@ -112,19 +113,19 @@ def build_model_a(
 
     # --- Conv Block 1: 16 filters ---
     x = layers.Conv2D(16, 3, padding="same", use_bias=False, name="a_conv1")(x)
-    x = layers.BatchNormalization(name="a_bn1")(x)
+    x = layers.BatchNormalization(momentum=bn_momentum, name="a_bn1")(x)
     x = layers.Activation("relu", name="a_relu1")(x)
     x = layers.MaxPooling2D(2, name="a_pool1")(x)
 
     # --- Conv Block 2: 32 filters ---
     x = layers.Conv2D(32, 3, padding="same", use_bias=False, name="a_conv2")(x)
-    x = layers.BatchNormalization(name="a_bn2")(x)
+    x = layers.BatchNormalization(momentum=bn_momentum, name="a_bn2")(x)
     x = layers.Activation("relu", name="a_relu2")(x)
     x = layers.MaxPooling2D(2, name="a_pool2")(x)
 
     # --- Conv Block 3: 64 filters ---
     x = layers.Conv2D(64, 3, padding="same", use_bias=False, name="a_conv3")(x)
-    x = layers.BatchNormalization(name="a_bn3")(x)
+    x = layers.BatchNormalization(momentum=bn_momentum, name="a_bn3")(x)
     x = layers.Activation("relu", name="a_relu3")(x)
     x = layers.MaxPooling2D(2, name="a_pool3")(x)
 
@@ -141,6 +142,7 @@ def build_model_b(
     input_shape: tuple = INPUT_SHAPE,
     num_classes: int = NUM_CLASSES,
     dropout_rate: float = 0.4,
+    bn_momentum: float = 0.99,
     name: str = "model_b_baseline_cnn",
 ) -> keras.Model:
     """
@@ -168,19 +170,19 @@ def build_model_b(
 
     # --- Conv Block 1: 32 filters ---
     x = layers.Conv2D(32, 3, padding="same", use_bias=False, name="b_conv1")(x)
-    x = layers.BatchNormalization(name="b_bn1")(x)
+    x = layers.BatchNormalization(momentum=bn_momentum, name="b_bn1")(x)
     x = layers.Activation("relu", name="b_relu1")(x)
     x = layers.MaxPooling2D(2, name="b_pool1")(x)
 
     # --- Conv Block 2: 64 filters ---
     x = layers.Conv2D(64, 3, padding="same", use_bias=False, name="b_conv2")(x)
-    x = layers.BatchNormalization(name="b_bn2")(x)
+    x = layers.BatchNormalization(momentum=bn_momentum, name="b_bn2")(x)
     x = layers.Activation("relu", name="b_relu2")(x)
     x = layers.MaxPooling2D(2, name="b_pool2")(x)
 
     # --- Conv Block 3: 128 filters ---
     x = layers.Conv2D(128, 3, padding="same", use_bias=False, name="b_conv3")(x)
-    x = layers.BatchNormalization(name="b_bn3")(x)
+    x = layers.BatchNormalization(momentum=bn_momentum, name="b_bn3")(x)
     x = layers.Activation("relu", name="b_relu3")(x)
     x = layers.MaxPooling2D(2, name="b_pool3")(x)
 
@@ -193,18 +195,19 @@ def build_model_b(
     return keras.Model(inputs=inputs, outputs=outputs, name=name)
 
 
-def _conv_bn(x, filters: int, stride: int, name: str, relu: bool = True):
+def _conv_bn(x, filters: int, stride: int, name: str, relu: bool = True, bn_momentum: float = 0.99):
     """Conv2D(3×3) → BatchNorm → (optional) ReLU."""
     x = layers.Conv2D(
         filters, 3, strides=stride, padding="same", use_bias=False, name=f"{name}_conv"
     )(x)
-    x = layers.BatchNormalization(name=f"{name}_bn")(x)
+    x = layers.BatchNormalization(momentum=bn_momentum, name=f"{name}_bn")(x)
     if relu:
         x = layers.Activation("relu", name=f"{name}_relu")(x)
     return x
 
 
-def _residual_block(x, filters: int, stride: int, name: str, use_skip: bool = True):
+def _residual_block(x, filters: int, stride: int, name: str, use_skip: bool = True,
+                    bn_momentum: float = 0.99):
     """
     Basic residual block (ResNet-18 style):
 
@@ -219,15 +222,15 @@ def _residual_block(x, filters: int, stride: int, name: str, use_skip: bool = Tr
     so the effect of skip connections can be measured in isolation.
     """
     shortcut = x
-    y = _conv_bn(x, filters, stride, name=f"{name}_a")
-    y = _conv_bn(y, filters, 1, name=f"{name}_b", relu=False)
+    y = _conv_bn(x, filters, stride, name=f"{name}_a", bn_momentum=bn_momentum)
+    y = _conv_bn(y, filters, 1, name=f"{name}_b", relu=False, bn_momentum=bn_momentum)
 
     if use_skip:
         if stride != 1 or shortcut.shape[-1] != filters:
             shortcut = layers.Conv2D(
                 filters, 1, strides=stride, use_bias=False, name=f"{name}_proj_conv"
             )(shortcut)
-            shortcut = layers.BatchNormalization(name=f"{name}_proj_bn")(shortcut)
+            shortcut = layers.BatchNormalization(momentum=bn_momentum, name=f"{name}_proj_bn")(shortcut)
         y = layers.Add(name=f"{name}_add")([y, shortcut])
 
     return layers.Activation("relu", name=f"{name}_out")(y)
@@ -238,6 +241,7 @@ def build_model_c(
     num_classes: int = NUM_CLASSES,
     dropout_rate: float = 0.3,
     use_skip: bool = True,
+    bn_momentum: float = 0.99,
     name: str = "model_c_residual_cnn",
 ) -> keras.Model:
     """
@@ -268,12 +272,13 @@ def build_model_c(
     x = _augmentation_block(name_prefix="c_")(x)
 
     # --- Stem ---
-    x = _conv_bn(x, 32, 1, name="c_stem")
+    x = _conv_bn(x, 32, 1, name="c_stem", bn_momentum=bn_momentum)
     x = layers.MaxPooling2D(2, name="c_stem_pool")(x)
 
     # --- Residual stages ---
     for i, (filters, stride) in enumerate([(32, 1), (64, 2), (128, 2), (256, 2)], start=1):
-        x = _residual_block(x, filters, stride, name=f"c_stage{i}", use_skip=use_skip)
+        x = _residual_block(x, filters, stride, name=f"c_stage{i}", use_skip=use_skip,
+                            bn_momentum=bn_momentum)
 
     # --- Classification head ---
     x = layers.GlobalAveragePooling2D(name="c_gap")(x)
@@ -287,10 +292,12 @@ def build_model_c_plain(
     input_shape: tuple = (160, 160, CHANNELS),
     num_classes: int = NUM_CLASSES,
     dropout_rate: float = 0.3,
+    bn_momentum: float = 0.99,
     name: str = "model_c_plain_cnn",
 ) -> keras.Model:
     """Model C-plain — identical to Model C but WITHOUT skip connections (ablation)."""
-    return build_model_c(input_shape, num_classes, dropout_rate, use_skip=False, name=name)
+    return build_model_c(input_shape, num_classes, dropout_rate, use_skip=False,
+                         bn_momentum=bn_momentum, name=name)
 
 
 # -------------------------------------------------------------------
@@ -332,11 +339,17 @@ MODEL_REGISTRY = {
 }
 
 
-def build_registered_model(slug: str) -> keras.Model:
-    """Builds a model from MODEL_REGISTRY with its own input size."""
+def build_registered_model(slug: str, bn_momentum: float = 0.99) -> keras.Model:
+    """
+    Builds a model from MODEL_REGISTRY with its own input size.
+
+    bn_momentum: BatchNorm moving-average momentum. Keras default is 0.99;
+    0.9 makes the moving statistics track the weights faster, which steadies
+    validation accuracy on a small dataset (only ~56 steps per epoch).
+    """
     spec = MODEL_REGISTRY[slug]
     h, w = spec["image_size"]
-    return spec["build_fn"](input_shape=(h, w, CHANNELS))
+    return spec["build_fn"](input_shape=(h, w, CHANNELS), bn_momentum=bn_momentum)
 
 
 def smoke_test():

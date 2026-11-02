@@ -28,3 +28,6 @@ dataset-resized/
 # Local tooling
 .claude/
 .ipynb_checkpoints/
+
+# Colab result downloads
+*.zip

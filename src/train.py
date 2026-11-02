@@ -7,9 +7,9 @@ an experiment comparison table. The test set is never touched here.
 
 Usage:
     python -m src.train                                   # Model A + B, recipe v1
-    python -m src.train --models model_c --recipe v2      # Model C, improved recipe
-    python -m src.train --models model_b model_c_plain model_c --recipe v2
-    python -m src.train --models model_c --recipe v2 --epochs 1   # quick check
+    python -m src.train --models model_c --recipe v3      # Model C, stable recipe
+    python -m src.train --models model_b model_c_plain model_c --recipe v3
+    python -m src.train --models model_c --recipe v3 --epochs 1   # quick check
 
 Each run is saved under a run name: "<model>" for recipe v1 (the original
 results) and "<model>_<recipe>" otherwise, e.g. models/model_c_v2_best.keras.
@@ -266,14 +266,19 @@ def train_model(model, model_label: str, image_size: tuple, recipe: dict,
     Trains a model on the train/val splits.
 
     Uses:
-      - EarlyStopping on val_loss: stops when it hasn't improved for
+      - EarlyStopping on val_loss (v1/v2): stops when it hasn't improved for
         `early_stopping_patience` epochs and restores the best weights.
+        v3 disables it and keeps the final weights of the full cosine run.
       - ReduceLROnPlateau (v1 only): halves the LR when val_loss stalls.
         v2 uses a cosine schedule instead.
       - class_weight: per-class weights that boost minority classes.
 
-    Returns (history_dict, best_val_acc, best_val_loss, elapsed_seconds,
-             epochs_run, val_ds, val_labels).
+    Returns (history_dict, best_val_acc, best_val_loss, saved_val_acc,
+             elapsed_seconds, epochs_run, val_ds, val_labels).
+
+    best_val_acc is the highest val accuracy seen in any epoch (optimistic if
+    the curve is noisy); saved_val_acc is the val accuracy of the weights that
+    are actually saved, and is the number used for model selection.
     """
     one_hot = recipe["label_smoothing"] > 0
     train_ds = build_dataset(SPLITS_DIR / "train.csv", image_size, shuffle=True, one_hot=one_hot)
@@ -286,14 +291,16 @@ def train_model(model, model_label: str, image_size: tuple, recipe: dict,
 
     compile_model(model, recipe, steps_per_epoch, max_epochs)
 
-    callbacks = [
-        tf.keras.callbacks.EarlyStopping(
-            monitor="val_loss",
-            patience=recipe["early_stopping_patience"],
-            restore_best_weights=True,
-            verbose=1,
-        ),
-    ]
+    callbacks = []
+    if recipe["early_stopping_patience"] is not None:
+        callbacks.append(
+            tf.keras.callbacks.EarlyStopping(
+                monitor="val_loss",
+                patience=recipe["early_stopping_patience"],
+                restore_best_weights=True,
+                verbose=1,
+            )
+        )
     if recipe["lr_schedule"] == "plateau":
         callbacks.append(
             tf.keras.callbacks.ReduceLROnPlateau(
@@ -311,7 +318,9 @@ def train_model(model, model_label: str, image_size: tuple, recipe: dict,
     print(f"  Parameters:   {model.count_params():,}")
     print(f"  Max epochs:   {max_epochs}")
     print(f"  Optimizer:    {recipe['optimizer']} (lr={recipe['learning_rate']}, schedule={recipe['lr_schedule']})")
-    print(f"  Early stop:   patience={recipe['early_stopping_patience']} on val_loss")
+    patience = recipe["early_stopping_patience"]
+    print(f"  Early stop:   {f'patience={patience} on val_loss' if patience is not None else 'off (keep final weights)'}")
+    print(f"  BN momentum:  {recipe['bn_momentum']}")
     print(f"  Label smooth: {recipe['label_smoothing']}")
     print(f"{'=' * 60}")
     t0 = time.time()
@@ -330,7 +339,11 @@ def train_model(model, model_label: str, image_size: tuple, recipe: dict,
     best_val_loss = float(min(history["val_loss"]))
     epochs_run    = len(history["accuracy"])
 
-    return history, best_val_acc, best_val_loss, elapsed, epochs_run, val_ds, val_labels
+    # Accuracy of the weights that will be saved (restored best or final)
+    _, saved_val_acc = model.evaluate(val_ds, verbose=0)
+
+    return (history, best_val_acc, best_val_loss, float(saved_val_acc),
+            elapsed, epochs_run, val_ds, val_labels)
 
 
 def get_run_name(slug: str, recipe_name: str) -> str:
@@ -385,9 +398,10 @@ def run_training(model_slugs: list, recipe_name: str = "v1", epochs_override: in
 
         tf.keras.backend.clear_session()
         tf.random.set_seed(RANDOM_SEED)
-        model = build_registered_model(slug)
+        model = build_registered_model(slug, bn_momentum=recipe["bn_momentum"])
 
-        history, best_val_acc, best_val_loss, elapsed, epochs_run, val_ds, val_labels = train_model(
+        (history, best_val_acc, best_val_loss, saved_val_acc,
+         elapsed, epochs_run, val_ds, val_labels) = train_model(
             model, model_label, image_size, recipe, max_epochs, class_weights
         )
 
@@ -425,6 +439,7 @@ def run_training(model_slugs: list, recipe_name: str = "v1", epochs_override: in
             "epochs_completed": epochs_run,
             "best_val_accuracy": round(best_val_acc, 4),
             "best_val_loss": round(best_val_loss, 4),
+            "saved_val_accuracy": round(saved_val_acc, 4),
             "param_count": model.count_params(),
             "training_time_s": round(elapsed, 1),
             "device": device,
@@ -435,6 +450,7 @@ def run_training(model_slugs: list, recipe_name: str = "v1", epochs_override: in
         print(f"  Epochs completed:  {epochs_run} / {max_epochs}")
         print(f"  Best Val Accuracy: {best_val_acc:.4f}")
         print(f"  Best Val Loss:     {best_val_loss:.4f}")
+        print(f"  Saved-model Val Accuracy: {saved_val_acc:.4f}")
         print(f"  Training Time:     {elapsed:.1f}s")
 
     df_exp = update_experiment_table(experiment_rows)
@@ -444,10 +460,10 @@ def run_training(model_slugs: list, recipe_name: str = "v1", epochs_override: in
     print("EXPERIMENT COMPARISON SUMMARY (all runs)")
     print("=" * 60)
     print(df_exp[["run_name", "image_dimensions", "param_count", "epochs_completed",
-                  "best_val_accuracy", "best_val_loss", "training_time_s", "device"]].to_string(index=False))
+                  "best_val_accuracy", "saved_val_accuracy", "training_time_s", "device"]].to_string(index=False))
 
-    best = df_exp.loc[df_exp["best_val_accuracy"].idxmax()]
-    print(f"\nHighest val accuracy so far: {best['run_name']} ({best['best_val_accuracy']:.4f})")
+    best = df_exp.loc[df_exp["saved_val_accuracy"].idxmax()]
+    print(f"\nHighest saved-model val accuracy so far: {best['run_name']} ({best['saved_val_accuracy']:.4f})")
     print("The test set has NOT been evaluated (run src.evaluate only for the final chosen model).")
 
 

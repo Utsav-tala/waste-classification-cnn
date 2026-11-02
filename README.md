@@ -135,7 +135,15 @@ Residual block: x → Conv3×3 → BN → ReLU → Conv3×3 → BN → (+ shortc
 
 **Ablation:** `model_c_plain` is the same network without skip connections, to measure what the residual connections add.
 
-**Training recipe v2** (used for Model C and the ablation; see `TRAINING_RECIPES` in [`src/config.py`](src/config.py)): up to 80 epochs with cosine LR decay, AdamW (weight decay 1e-4), label smoothing 0.1, early stopping patience 15, and a softer `trash` class weight (×0.5) to reduce trash over-prediction. Recipe v1 is the original setup behind the Model A/B results.
+**Training recipes** (see `TRAINING_RECIPES` in [`src/config.py`](src/config.py)):
+
+| Recipe | Setup | Used for |
+|---|---|---|
+| v1 | Adam, ReduceLROnPlateau, early stopping (patience 8), 50 epochs | Original Model A/B results |
+| v2 | AdamW (wd 1e-4), cosine LR, label smoothing 0.1, softer `trash` weight (×0.5), early stopping (patience 15), 80 epochs | First Model C run |
+| v3 | v2 + **no early stopping** (full 100-epoch cosine run, final weights kept) + **BatchNorm momentum 0.9** | Model C and the ablation |
+
+**First Model C run (v2, Colab T4, 4.7 min):** 76.3% validation accuracy vs 69.7% for Model B, with glass recall up from about 41% to 71%. However, validation accuracy swung between about 35% and 76% from one epoch to the next, and early stopping kept a single peak (epoch 32 of 80) before the learning rate had decayed. Recipe v3 removes that instability so runs can be compared fairly. Runs are compared on `saved_val_accuracy` (the validation accuracy of the weights actually saved), not on the best single epoch.
 
 ---
 
@@ -193,7 +201,7 @@ The dataset is not stored in this repo. Download `dataset-resized.zip` from the 
 python -m src.data_preparation                    # validate data, create splits, plots
 python -m src.model                               # smoke-test all architectures
 python -m src.train                               # Model A + B with the original recipe (v1)
-python -m src.train --models model_c --recipe v2  # Model C with the improved recipe
+python -m src.train --models model_c --recipe v3  # Model C with the stable recipe
 python -m src.evaluate model_b                    # final test evaluation of a chosen run
 ```
 
@@ -217,7 +225,7 @@ Open [`notebooks/train_colab.ipynb`](notebooks/train_colab.ipynb) in Colab ([dir
 ## Roadmap
 
 - [x] **Model C — residual from-scratch CNN** (architecture, training recipe v2, Colab GPU notebook)
-- [ ] Train Model C and the ablation (`model_b`, `model_c_plain`, `model_c` with recipe v2) on Colab and report results
+- [ ] Train Model C and the ablation (`model_b`, `model_c_plain`, `model_c` with recipe v3) on Colab and report results
 - [ ] **Transfer learning** (MobileNetV2, EfficientNetB0) as a comparison baseline. See [`docs/transfer_learning_plan.md`](docs/transfer_learning_plan.md)
 - [ ] Evaluate all models on an unseen real-world dataset to measure generalisation
 - [ ] Model selector in the Streamlit app
