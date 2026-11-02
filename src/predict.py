@@ -95,7 +95,8 @@ def predict(
     classes.  They are not calibrated posterior probabilities and should not
     be interpreted as guarantees of correctness.
     """
-    arr = preprocess_image(image_source)          # (1, H, W, 3) uint8
+    target_size = tuple(model.input_shape[1:3])   # each model knows its own input size
+    arr = preprocess_image(image_source, target_size)  # (1, H, W, 3) uint8
     probs = model(arr, training=False).numpy()[0]  # shape: (num_classes,)
 
     predicted_idx   = int(np.argmax(probs))

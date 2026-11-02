@@ -161,8 +161,9 @@ def predict_image(pil_image: Image.Image, model, classes: list) -> dict:
     import numpy as np
     import tensorflow as tf
 
-    img = pil_image.convert("RGB").resize((128, 128), Image.BILINEAR)
-    arr = np.array(img, dtype=np.uint8)[np.newaxis]           # (1,128,128,3)
+    height, width = model.input_shape[1:3]                    # model's own input size
+    img = pil_image.convert("RGB").resize((width, height), Image.BILINEAR)
+    arr = np.array(img, dtype=np.uint8)[np.newaxis]           # (1,H,W,3)
     probs = model(arr, training=False).numpy()[0]
     idx   = int(np.argmax(probs))
     return {

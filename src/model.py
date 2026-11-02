@@ -3,6 +3,8 @@ CNN Model Architectures for Waste Classification.
 
 Model A: Small CNN  — 3 Conv blocks (16, 32, 64 filters)
 Model B: Baseline CNN — 3 Conv blocks (32, 64, 128 filters)
+Model C: Residual CNN — stem + 4 residual stages (32, 64, 128, 256 filters)
+Model C-plain: Model C without skip connections (ablation baseline)
 
 Both models embed rescaling (0-1) as a Keras layer, so raw uint8
 tensors can be fed at inference time without external preprocessing.
@@ -191,10 +193,156 @@ def build_model_b(
     return keras.Model(inputs=inputs, outputs=outputs, name=name)
 
 
+def _conv_bn(x, filters: int, stride: int, name: str, relu: bool = True):
+    """Conv2D(3×3) → BatchNorm → (optional) ReLU."""
+    x = layers.Conv2D(
+        filters, 3, strides=stride, padding="same", use_bias=False, name=f"{name}_conv"
+    )(x)
+    x = layers.BatchNormalization(name=f"{name}_bn")(x)
+    if relu:
+        x = layers.Activation("relu", name=f"{name}_relu")(x)
+    return x
+
+
+def _residual_block(x, filters: int, stride: int, name: str, use_skip: bool = True):
+    """
+    Basic residual block (ResNet-18 style):
+
+        x → Conv3×3 → BN → ReLU → Conv3×3 → BN → (+ shortcut) → ReLU
+
+    The block learns only the *change* F(x) to apply to its input, and the
+    shortcut carries x (and the gradient) straight through. When the block
+    halves the spatial size or changes the channel count, a 1×1 strided
+    "projection" conv reshapes the shortcut so the two tensors can be added.
+
+    use_skip=False builds the same block with no shortcut (Model C-plain),
+    so the effect of skip connections can be measured in isolation.
+    """
+    shortcut = x
+    y = _conv_bn(x, filters, stride, name=f"{name}_a")
+    y = _conv_bn(y, filters, 1, name=f"{name}_b", relu=False)
+
+    if use_skip:
+        if stride != 1 or shortcut.shape[-1] != filters:
+            shortcut = layers.Conv2D(
+                filters, 1, strides=stride, use_bias=False, name=f"{name}_proj_conv"
+            )(shortcut)
+            shortcut = layers.BatchNormalization(name=f"{name}_proj_bn")(shortcut)
+        y = layers.Add(name=f"{name}_add")([y, shortcut])
+
+    return layers.Activation("relu", name=f"{name}_out")(y)
+
+
+def build_model_c(
+    input_shape: tuple = (160, 160, CHANNELS),
+    num_classes: int = NUM_CLASSES,
+    dropout_rate: float = 0.3,
+    use_skip: bool = True,
+    name: str = "model_c_residual_cnn",
+) -> keras.Model:
+    """
+    Model C — Residual CNN (built from scratch).
+
+    Architecture (160×160 input):
+      Rescaling → Augmentation (train only)
+      → Stem: Conv2D(32) + BN + ReLU + MaxPool          → 80×80×32
+      → Stage 1: Residual block (32)                    → 80×80×32
+      → Stage 2: Residual block (64),  stride 2         → 40×40×64
+      → Stage 3: Residual block (128), stride 2         → 20×20×128
+      → Stage 4: Residual block (256), stride 2         → 10×10×256
+      → GlobalAveragePooling2D → Dropout → Dense(6, Softmax)
+
+    Why it should beat Models A/B (which underfit at ~68%):
+      - Depth: 9 conv layers instead of 3, so the network can build up from
+        edges and textures to object parts and shapes.
+      - Receptive field: each final feature sees ≈96×96 px of the 160×160
+        input (≈60%), versus ≈22×22 px of 128×128 (≈17%) for Models A/B.
+      - Skip connections keep gradients flowing through the deeper network.
+    """
+    inputs = keras.Input(shape=input_shape, name="image_input")
+
+    # --- Preprocessing ---
+    x = layers.Rescaling(1.0 / 255.0, name="rescaling")(inputs)
+
+    # --- Augmentation ---
+    x = _augmentation_block(name_prefix="c_")(x)
+
+    # --- Stem ---
+    x = _conv_bn(x, 32, 1, name="c_stem")
+    x = layers.MaxPooling2D(2, name="c_stem_pool")(x)
+
+    # --- Residual stages ---
+    for i, (filters, stride) in enumerate([(32, 1), (64, 2), (128, 2), (256, 2)], start=1):
+        x = _residual_block(x, filters, stride, name=f"c_stage{i}", use_skip=use_skip)
+
+    # --- Classification head ---
+    x = layers.GlobalAveragePooling2D(name="c_gap")(x)
+    x = layers.Dropout(dropout_rate, name="c_dropout")(x)
+    outputs = layers.Dense(num_classes, activation="softmax", name="c_output")(x)
+
+    return keras.Model(inputs=inputs, outputs=outputs, name=name)
+
+
+def build_model_c_plain(
+    input_shape: tuple = (160, 160, CHANNELS),
+    num_classes: int = NUM_CLASSES,
+    dropout_rate: float = 0.3,
+    name: str = "model_c_plain_cnn",
+) -> keras.Model:
+    """Model C-plain — identical to Model C but WITHOUT skip connections (ablation)."""
+    return build_model_c(input_shape, num_classes, dropout_rate, use_skip=False, name=name)
+
+
+# -------------------------------------------------------------------
+# Model registry: one entry per architecture, used by train.py
+# -------------------------------------------------------------------
+MODEL_REGISTRY = {
+    "model_a": {
+        "label": "Model A (Small CNN)",
+        "build_fn": build_model_a,
+        "image_size": (IMAGE_HEIGHT, IMAGE_WIDTH),
+        "filter_config": "16-32-64",
+        "dense_units": 64,
+        "dropout_rate": 0.3,
+    },
+    "model_b": {
+        "label": "Model B (Baseline CNN)",
+        "build_fn": build_model_b,
+        "image_size": (IMAGE_HEIGHT, IMAGE_WIDTH),
+        "filter_config": "32-64-128",
+        "dense_units": 128,
+        "dropout_rate": 0.4,
+    },
+    "model_c": {
+        "label": "Model C (Residual CNN)",
+        "build_fn": build_model_c,
+        "image_size": (160, 160),
+        "filter_config": "32-32-64-128-256 (residual)",
+        "dense_units": 0,
+        "dropout_rate": 0.3,
+    },
+    "model_c_plain": {
+        "label": "Model C-plain (no skip connections)",
+        "build_fn": build_model_c_plain,
+        "image_size": (160, 160),
+        "filter_config": "32-32-64-128-256 (plain)",
+        "dense_units": 0,
+        "dropout_rate": 0.3,
+    },
+}
+
+
+def build_registered_model(slug: str) -> keras.Model:
+    """Builds a model from MODEL_REGISTRY with its own input size."""
+    spec = MODEL_REGISTRY[slug]
+    h, w = spec["image_size"]
+    return spec["build_fn"](input_shape=(h, w, CHANNELS))
+
+
 def smoke_test():
     """
-    Forward-pass smoke test for both models.
-    Creates a random batch of 4 images (128×128×3, dtype=uint8) and
+    Forward-pass smoke test for every registered model.
+    Creates a random batch of 4 uint8 images at each model's input size and
     checks that output shapes and probability sums are correct.
     """
     import numpy as np
@@ -203,11 +351,11 @@ def smoke_test():
     print("SMOKE TEST: Verifying Model Architectures")
     print("=" * 55)
 
-    dummy = np.random.randint(0, 256, (4, IMAGE_HEIGHT, IMAGE_WIDTH, CHANNELS), dtype=np.uint8)
-
-    for build_fn, label in [(build_model_a, "Model A (Small CNN)"),
-                             (build_model_b, "Model B (Baseline CNN)")]:
-        model = build_fn()
+    for slug, spec in MODEL_REGISTRY.items():
+        label = spec["label"]
+        h, w = spec["image_size"]
+        dummy = np.random.randint(0, 256, (4, h, w, CHANNELS), dtype=np.uint8)
+        model = build_registered_model(slug)
         model.compile(optimizer="adam", loss="sparse_categorical_crossentropy")
         out = model(dummy, training=False)
         params = model.count_params()

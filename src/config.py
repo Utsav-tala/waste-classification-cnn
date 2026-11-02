@@ -64,3 +64,33 @@ CLASS_WEIGHT_MULTIPLIERS = {
     "plastic": 1.00,
     "trash": 1.00,
 }
+
+# Training Recipes
+# v1 = the original recipe used for the published Model A / Model B results.
+# v2 = improved recipe for Model C and the ablation study:
+#   - more epochs + cosine learning-rate decay (A/B were still improving at 50)
+#   - AdamW weight decay and label smoothing to curb overfitting of a larger
+#     model and soften the 3 mislabelled duplicate images
+#   - softer trash weight (v1 over-predicted trash: 100% recall, 33% precision)
+TRAINING_RECIPES = {
+    "v1": {
+        "max_epochs": MAX_EPOCHS,
+        "learning_rate": LEARNING_RATE,
+        "optimizer": "adam",
+        "weight_decay": 0.0,
+        "lr_schedule": "plateau",
+        "label_smoothing": 0.0,
+        "early_stopping_patience": EARLY_STOPPING_PATIENCE,
+        "class_weight_multipliers": CLASS_WEIGHT_MULTIPLIERS,
+    },
+    "v2": {
+        "max_epochs": 80,
+        "learning_rate": 1e-3,
+        "optimizer": "adamw",
+        "weight_decay": 1e-4,
+        "lr_schedule": "cosine",
+        "label_smoothing": 0.1,
+        "early_stopping_patience": 15,
+        "class_weight_multipliers": {**CLASS_WEIGHT_MULTIPLIERS, "trash": 0.5},
+    },
+}

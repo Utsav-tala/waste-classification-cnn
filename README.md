@@ -46,8 +46,8 @@ Classifying photos of waste into **6 recycling categories** (cardboard, glass, m
 | **macro avg** | 0.69 | 0.72 | 0.66 | 380 |
 
 <p align="center">
-  <img src="results/plots/confusion_matrix.png" width="48%" alt="Confusion matrix"/>
-  <img src="results/plots/per_class_f1_scores.png" width="48%" alt="Per-class F1"/>
+  <img src="results/plots/confusion_matrix_model_b.png" width="48%" alt="Confusion matrix"/>
+  <img src="results/plots/per_class_f1_scores_model_b.png" width="48%" alt="Per-class F1"/>
 </p>
 
 ### Analysis
@@ -107,6 +107,36 @@ Input (128×128×3, uint8)
 
 Rescaling and augmentation live inside the model, so the saved `.keras` file takes raw images and needs no extra preprocessing at inference time.
 
+### Model C — Residual CNN (in progress)
+
+A deeper from-scratch network designed to fix the underfitting of Models A/B:
+
+```
+Input (160×160×3)
+ → Rescaling → Augmentation (training only)
+ → Stem: Conv 3×3 (32) → BN → ReLU → MaxPool         → 80×80×32
+ → Stage 1: Residual block (32)                      → 80×80×32
+ → Stage 2: Residual block (64),  stride 2           → 40×40×64
+ → Stage 3: Residual block (128), stride 2           → 20×20×128
+ → Stage 4: Residual block (256), stride 2           → 10×10×256
+ → GlobalAveragePooling2D → Dropout(0.3) → Dense(6, Softmax)
+
+Residual block: x → Conv3×3 → BN → ReLU → Conv3×3 → BN → (+ shortcut) → ReLU
+(1×1 strided projection on the shortcut when the shape changes)
+```
+
+| | Model A | Model B | Model C |
+|---|---|---|---|
+| Input | 128×128 | 128×128 | 160×160 |
+| Conv layers | 3 | 3 | 9 (+3 shortcut projections) |
+| Skip connections | ✗ | ✗ | ✓ |
+| Receptive field of final features | ≈22 px | ≈22 px | ≈96 px |
+| Parameters | 28K | 111K | 1.23M |
+
+**Ablation:** `model_c_plain` is the same network without skip connections, to measure what the residual connections add.
+
+**Training recipe v2** (used for Model C and the ablation; see `TRAINING_RECIPES` in [`src/config.py`](src/config.py)): up to 80 epochs with cosine LR decay, AdamW (weight decay 1e-4), label smoothing 0.1, early stopping patience 15, and a softer `trash` class weight (×0.5) to reduce trash over-prediction. Recipe v1 is the original setup behind the Model A/B results.
+
 ---
 
 ## Project Structure
@@ -118,10 +148,12 @@ waste-classification-cnn/
 ├── src/
 │   ├── config.py              # paths, classes, hyperparameters
 │   ├── data_preparation.py    # validation, duplicate detection, stratified splits
-│   ├── model.py               # Model A & Model B definitions (+ smoke test)
-│   ├── train.py               # training loop, curves, validation confusion matrix
-│   ├── evaluate.py            # final test-set evaluation
+│   ├── model.py               # Model A/B/C definitions, model registry, smoke test
+│   ├── train.py               # training CLI (models + recipe), curves, val confusion matrix
+│   ├── evaluate.py            # final test-set evaluation for a chosen run
 │   └── predict.py             # reusable single-image inference
+├── notebooks/
+│   └── train_colab.ipynb      # GPU training on Google Colab
 ├── data/splits/               # train / val / test CSVs (file paths + labels)
 ├── models/                    # trained .keras models, histories, class labels
 ├── results/
@@ -158,11 +190,18 @@ Upload a JPG/PNG/WEBP photo of a waste item and click **Classify Waste**.
 The dataset is not stored in this repo. Download `dataset-resized.zip` from the [TrashNet repository](https://github.com/garythung/trashnet/tree/master/data) and unzip it into the project root so you have `dataset-resized/<class>/*.jpg`.
 
 ```bash
-python -m src.data_preparation   # validate data, create splits, plots
-python -m src.model              # smoke-test both architectures
-python -m src.train              # train Model A and Model B
-python -m src.evaluate model_b   # final evaluation on the test set
+python -m src.data_preparation                    # validate data, create splits, plots
+python -m src.model                               # smoke-test all architectures
+python -m src.train                               # Model A + B with the original recipe (v1)
+python -m src.train --models model_c --recipe v2  # Model C with the improved recipe
+python -m src.evaluate model_b                    # final test evaluation of a chosen run
 ```
+
+Runs are saved as `<model>` for recipe v1 and `<model>_<recipe>` otherwise (e.g. `models/model_c_v2_best.keras`). Every run is added to [`results/reports/experiment_comparison.csv`](results/reports/experiment_comparison.csv).
+
+### 4. Train on a free GPU (Google Colab)
+
+Open [`notebooks/train_colab.ipynb`](notebooks/train_colab.ipynb) in Colab ([direct link](https://colab.research.google.com/github/Utsav-tala/waste-classification-cnn/blob/main/notebooks/train_colab.ipynb)), select a **T4 GPU** runtime and run the cells top to bottom. The notebook clones this repo, installs the same TensorFlow/Keras versions, downloads TrashNet and checks every image's hash against the split files, trains, and saves the results to Google Drive.
 
 ---
 
@@ -177,8 +216,8 @@ python -m src.evaluate model_b   # final evaluation on the test set
 
 ## Roadmap
 
-- [ ] **Model C — deeper from-scratch CNN** (residual / VGG-style blocks, larger receptive field, 160×160 input)
-- [ ] Tune class weights and add label smoothing to fix trash over-prediction
+- [x] **Model C — residual from-scratch CNN** (architecture, training recipe v2, Colab GPU notebook)
+- [ ] Train Model C and the ablation (`model_b`, `model_c_plain`, `model_c` with recipe v2) on Colab and report results
 - [ ] **Transfer learning** (MobileNetV2, EfficientNetB0) as a comparison baseline. See [`docs/transfer_learning_plan.md`](docs/transfer_learning_plan.md)
 - [ ] Evaluate all models on an unseen real-world dataset to measure generalisation
 - [ ] Model selector in the Streamlit app

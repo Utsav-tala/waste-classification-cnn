@@ -1,6 +1,12 @@
 """
 Final evaluation of the selected model on the held-out test set.
 Run this ONLY after model selection is complete (Stage 7).
+
+Usage:
+    python -m src.evaluate model_b        # original Model B (recipe v1)
+    python -m src.evaluate model_c_v2     # any run name saved by src.train
+
+Outputs are suffixed with the run name, e.g. confusion_matrix_model_c_v2.png.
 """
 import json
 from pathlib import Path
@@ -20,8 +26,6 @@ from src.config import (
     CLASSES,
     CLASS_TO_IDX,
     DATASET_DIR,
-    IMAGE_HEIGHT,
-    IMAGE_WIDTH,
     MODELS_DIR,
     PLOTS_DIR,
     RANDOM_SEED,
@@ -32,16 +36,17 @@ from src.config import (
 BASE_DIR = DATASET_DIR.parent
 
 
-def build_test_dataset(csv_path: Path, batch_size: int = BATCH_SIZE) -> tf.data.Dataset:
+def build_test_dataset(csv_path: Path, image_size: tuple, batch_size: int = BATCH_SIZE) -> tf.data.Dataset:
     """Builds a deterministic (no shuffle) dataset from the test CSV."""
     df = pd.read_csv(csv_path)
     abs_paths = (BASE_DIR / df["filepath"]).astype(str).tolist()
     labels = df["label"].tolist()
+    height, width = image_size
 
     def _load(fp, lb):
         raw = tf.io.read_file(fp)
         img = tf.image.decode_jpeg(raw, channels=3)
-        img = tf.image.resize(img, [IMAGE_HEIGHT, IMAGE_WIDTH], method="bilinear")
+        img = tf.image.resize(img, [height, width], method="bilinear")
         return tf.cast(img, tf.uint8), lb
 
     ds = tf.data.Dataset.from_tensor_slices((abs_paths, labels))
@@ -115,16 +120,16 @@ def plot_per_class_f1(report_dict: dict, output_path: Path):
     plt.close(fig)
 
 
-def run_evaluation(model_slug: str = "model_b"):
+def run_evaluation(run_name: str = "model_b"):
     """
     Evaluates the selected model on the held-out test set.
 
     Parameters
     ----------
-    model_slug : str
-        'model_a' or 'model_b' — whichever was chosen after training.
+    run_name : str
+        A run saved by src.train, e.g. 'model_b' or 'model_c_v2'.
     """
-    model_path = MODELS_DIR / f"{model_slug}_best.keras"
+    model_path = MODELS_DIR / f"{run_name}_best.keras"
     if not model_path.exists():
         raise FileNotFoundError(
             f"Model not found: {model_path}\n"
@@ -132,13 +137,14 @@ def run_evaluation(model_slug: str = "model_b"):
         )
 
     print("=" * 60)
-    print(f"STAGE 7: FINAL EVALUATION — {model_slug.upper()}")
+    print(f"STAGE 7: FINAL EVALUATION — {run_name.upper()}")
     print("=" * 60)
 
     model = tf.keras.models.load_model(model_path)
-    print(f"Model loaded: {model_path}")
+    image_size = tuple(model.input_shape[1:3])   # each model knows its own input size
+    print(f"Model loaded: {model_path} (input {image_size[0]}x{image_size[1]})")
 
-    test_ds, true_labels = build_test_dataset(SPLITS_DIR / "test.csv")
+    test_ds, true_labels = build_test_dataset(SPLITS_DIR / "test.csv", image_size)
 
     # Predict on the entire test set
     probs = model.predict(test_ds, verbose=1)
@@ -146,7 +152,7 @@ def run_evaluation(model_slug: str = "model_b"):
 
     # Metrics
     test_accuracy = float(np.mean(np.array(true_labels) == pred_labels))
-    cm = confusion_matrix(true_labels, pred_labels)
+    cm = confusion_matrix(true_labels, pred_labels, labels=list(range(len(CLASSES))))
     report_dict = classification_report(
         true_labels, pred_labels, target_names=CLASSES, output_dict=True
     )
@@ -159,17 +165,17 @@ def run_evaluation(model_slug: str = "model_b"):
     print(report_text)
 
     # --- Save confusion matrix plot ---
-    cm_path = PLOTS_DIR / "confusion_matrix.png"
-    plot_confusion_matrix(cm, cm_path)
+    cm_path = PLOTS_DIR / f"confusion_matrix_{run_name}.png"
+    plot_confusion_matrix(cm, cm_path, title_suffix=f"Test Set, {run_name}")
     print(f"Confusion matrix saved -> {cm_path}")
 
     # --- Save per-class F1 bar chart ---
-    f1_path = PLOTS_DIR / "per_class_f1_scores.png"
+    f1_path = PLOTS_DIR / f"per_class_f1_scores_{run_name}.png"
     plot_per_class_f1(report_dict, f1_path)
     print(f"Per-class F1 bar chart saved -> {f1_path}")
 
     # --- Save classification report (text) ---
-    report_txt_path = REPORTS_DIR / "classification_report.txt"
+    report_txt_path = REPORTS_DIR / f"classification_report_{run_name}.txt"
     with open(report_txt_path, "w") as f:
         f.write(f"Model evaluated: {model_path.relative_to(BASE_DIR)}\n")
         f.write(f"Test accuracy  : {test_accuracy:.4f}\n\n")
@@ -196,7 +202,7 @@ def run_evaluation(model_slug: str = "model_b"):
             "f1_score":  round(m["f1-score"],  4),
             "support":   int(m["support"]),
         })
-    report_csv_path = REPORTS_DIR / "classification_report.csv"
+    report_csv_path = REPORTS_DIR / f"classification_report_{run_name}.csv"
     pd.DataFrame(report_csv_rows).to_csv(report_csv_path, index=False)
     print(f"Classification report (CSV) saved -> {report_csv_path}")
 
@@ -209,9 +215,8 @@ def run_evaluation(model_slug: str = "model_b"):
     # --- Update experiment comparison with test accuracy ---
     exp_path = REPORTS_DIR / "experiment_comparison.csv"
     if exp_path.exists():
-        exp_df = pd.read_csv(exp_path)
-        mask = exp_df["cnn_architecture"].str.contains(model_slug, case=False, na=False)
-        exp_df["test_accuracy"] = exp_df["test_accuracy"].astype(str)
+        exp_df = pd.read_csv(exp_path, dtype={"test_accuracy": str})
+        mask = exp_df["run_name"] == run_name
         exp_df.loc[mask, "test_accuracy"] = str(round(test_accuracy, 4))
         exp_df.to_csv(exp_path, index=False)
         print(f"Experiment comparison updated -> {exp_path}")
@@ -233,5 +238,5 @@ def run_evaluation(model_slug: str = "model_b"):
 
 if __name__ == "__main__":
     import sys
-    slug = sys.argv[1] if len(sys.argv) > 1 else "model_b"
-    run_evaluation(slug)
+    run = sys.argv[1] if len(sys.argv) > 1 else "model_b"
+    run_evaluation(run)
