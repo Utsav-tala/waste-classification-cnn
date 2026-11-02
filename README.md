@@ -26,12 +26,15 @@ Classifying photos of waste into **6 recycling categories** (cardboard, glass, m
 
 ## Results
 
-| Model | Filters | Params | Epochs | Train time (CPU) | Best val acc | Test acc |
-|---|---|---|---|---|---|---|
-| Model A — Small CNN | 16-32-64 | 28.5K | 50 | 5.5 min | 66.0% | not evaluated* |
-| **Model B — Baseline CNN** | 32-64-128 | 111K | 50 | 15.7 min | **69.7%** | **68.4%** |
+| Model | Recipe | Params | Input | Epochs | Train time | Val acc (saved model) | Test acc |
+|---|---|---|---|---|---|---|---|
+| Model A — Small CNN | v1 | 28.5K | 128 | 50 | 5.5 min (CPU) | 65.2% | not evaluated* |
+| Model B — Baseline CNN | v1 | 111K | 128 | 50 | 15.7 min (CPU) | 69.7% | 68.4% |
+| **Model C — Residual CNN** | **v3** | 1.23M | 160 | 100 | 10 min (T4 GPU) | **88.1%** | pending |
 
-\* Model B was selected on validation accuracy, so only Model B was run on the held-out test set.
+\* Test accuracy is measured only for a model chosen on validation accuracy, and only once. Model C's test evaluation will follow the ablation study.
+
+The sections below analyse Model B, the original baseline. Model C results are in [Model C](#model-c--residual-cnn).
 
 **Per-class test results (Model B, 380 test images):**
 
@@ -107,7 +110,7 @@ Input (128×128×3, uint8)
 
 Rescaling and augmentation live inside the model, so the saved `.keras` file takes raw images and needs no extra preprocessing at inference time.
 
-### Model C — Residual CNN (in progress)
+### Model C — Residual CNN
 
 A deeper from-scratch network designed to fix the underfitting of Models A/B:
 
@@ -143,7 +146,26 @@ Residual block: x → Conv3×3 → BN → ReLU → Conv3×3 → BN → (+ shortc
 | v2 | AdamW (wd 1e-4), cosine LR, label smoothing 0.1, softer `trash` weight (×0.5), early stopping (patience 15), 80 epochs | First Model C run |
 | v3 | v2 + **no early stopping** (full 100-epoch cosine run, final weights kept) + **BatchNorm momentum 0.9** | Model C and the ablation |
 
-**First Model C run (v2, Colab T4, 4.7 min):** 76.3% validation accuracy vs 69.7% for Model B, with glass recall up from about 41% to 71%. However, validation accuracy swung between about 35% and 76% from one epoch to the next, and early stopping kept a single peak (epoch 32 of 80) before the learning rate had decayed. Recipe v3 removes that instability so runs can be compared fairly. Runs are compared on `saved_val_accuracy` (the validation accuracy of the weights actually saved), not on the best single epoch.
+**First Model C run (v2, Colab T4, 4.7 min):** 76.3% validation accuracy vs 69.7% for Model B, with glass recall up from about 41% to 71%. However, validation accuracy swung between about 35% and 76% from one epoch to the next, and early stopping kept a single peak (epoch 32 of 80) before the learning rate had decayed. A second v2 run with identical settings reached only 68.1%, which confirmed the instability. Runs are compared on `saved_val_accuracy` (the validation accuracy of the weights actually saved), not on the best single epoch.
+
+**Model C with recipe v3 (Colab T4, 10 min): 88.1% validation accuracy.** Validation accuracy is still noisy while the learning rate is high, but it settles as the cosine schedule decays: over the last 10 epochs it averages 87.8% ± 1.0. Training accuracy ends at about 92%, so the train/val gap is small and the model is not overfitting.
+
+| Epochs | Mean val acc | Std |
+|---|---|---|
+| 1–25 | 47.5% | 10.7 |
+| 26–50 | 55.9% | 14.4 |
+| 51–75 | 70.8% | 11.1 |
+| 76–90 | 84.2% | 3.9 |
+| 91–100 | 87.8% | 1.0 |
+
+Per-class validation recall improved most on the classes Model B struggled with: glass 83%, metal 79%, plastic 94%, paper 91%, cardboard 93%, trash 86%. Trash precision rose from 33% to 64%, so trash is no longer over-predicted.
+
+<p align="center">
+  <img src="results/plots/training_curves_model_c_v3.png" width="800" alt="Training curves for Model C (v3)"/>
+</p>
+<p align="center">
+  <img src="results/plots/val_confusion_matrix_model_c_v3.png" width="55%" alt="Validation confusion matrix for Model C (v3)"/>
+</p>
 
 ---
 
@@ -224,8 +246,9 @@ Open [`notebooks/train_colab.ipynb`](notebooks/train_colab.ipynb) in Colab ([dir
 
 ## Roadmap
 
-- [x] **Model C — residual from-scratch CNN** (architecture, training recipe v2, Colab GPU notebook)
-- [ ] Train Model C and the ablation (`model_b`, `model_c_plain`, `model_c` with recipe v3) on Colab and report results
+- [x] **Model C — residual from-scratch CNN** (architecture, recipes v2/v3, Colab GPU notebook): 88.1% val accuracy
+- [ ] Ablation with recipe v3 (`model_b`, `model_c_plain`) to separate the effect of the recipe, depth and skip connections
+- [ ] Final test-set evaluation of the chosen model, and switch the Streamlit app to it
 - [ ] **Transfer learning** (MobileNetV2, EfficientNetB0) as a comparison baseline. See [`docs/transfer_learning_plan.md`](docs/transfer_learning_plan.md)
 - [ ] Evaluate all models on an unseen real-world dataset to measure generalisation
 - [ ] Model selector in the Streamlit app
