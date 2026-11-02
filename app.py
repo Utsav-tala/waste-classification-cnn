@@ -138,14 +138,13 @@ def load_resources():
     """Returns (model, classes) from disk, cached for the session lifetime."""
     import tensorflow as tf
 
-    model_path  = MODELS_DIR / "model_b_best.keras"
     labels_path = MODELS_DIR / "class_labels.json"
 
-    if not model_path.exists():
-        # Fallback to model_a if model_b is not found
-        model_path = MODELS_DIR / "model_a_best.keras"
+    # Final model first (Model C, recipe v3), then the older baselines
+    candidates = ["model_c_v3_best.keras", "model_b_best.keras", "model_a_best.keras"]
+    model_path = next((MODELS_DIR / c for c in candidates if (MODELS_DIR / c).exists()), None)
 
-    if not model_path.exists():
+    if model_path is None:
         return None, None
 
     model = tf.keras.models.load_model(str(model_path))
@@ -219,9 +218,9 @@ with c1:
 with c2:
     st.markdown('<div class="metric-card"><div class="label">Waste Categories</div><div class="value">6</div></div>', unsafe_allow_html=True)
 with c3:
-    st.markdown('<div class="metric-card"><div class="label">Input Resolution</div><div class="value">128×128</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="metric-card"><div class="label">Input Resolution</div><div class="value">160×160</div></div>', unsafe_allow_html=True)
 with c4:
-    st.markdown('<div class="metric-card"><div class="label">Architecture</div><div class="value">CNN</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="metric-card"><div class="label">Test Accuracy</div><div class="value">81.6%</div></div>', unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -362,6 +361,11 @@ with st.expander("📚 About This Project & CNN Architecture"):
         | **GlobalAveragePooling** | Collapses each feature map to a single value, summarising what the network has detected. |
         | **Dense + Dropout** | Final classification head; Dropout prevents overfitting by randomly disabling neurons during training. |
         | **Softmax** | Converts raw outputs into six class probabilities that sum to 1. |
+        | **Skip connection** | Adds a block's input to its output (F(x) + x), so a deep network trains as easily as a shallow one. |
+
+        #### Model used here: Residual CNN (Model C)
+        - Built from scratch: stem + 4 residual stages (32 → 64 → 128 → 256 filters), 1.23M parameters, 160×160 input
+        - **81.6% test accuracy** (baseline 3-layer CNN: 68.4%)
 
         #### Dataset
         - **Source:** TrashNet (resized to 512×384 px)
@@ -370,9 +374,10 @@ with st.expander("📚 About This Project & CNN Architecture"):
         - **Test split:** 380 images (15%)
 
         #### Training Details
-        - Optimiser: Adam · Loss: Sparse Categorical Cross-Entropy
-        - Early stopping (patience 8) · LR reduction on plateau
+        - Optimiser: AdamW (weight decay 1e-4) · cosine learning-rate decay over 100 epochs
+        - Loss: Categorical Cross-Entropy with label smoothing 0.1
         - Class weighting to handle minority class (`trash`)
+        - Trained on a Google Colab T4 GPU (~10 minutes)
         - Data augmentation: random horizontal flip, rotation, zoom, brightness, contrast (training only)
         """
     )

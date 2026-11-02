@@ -15,53 +15,76 @@ Classifying photos of waste into **6 recycling categories** (cardboard, glass, m
 
 ## Highlights
 
+- **81.6% test accuracy with a residual CNN built from scratch**, up from 68.4% for the baseline 3-layer CNN (same held-out test set of 380 images).
+- **Ablation study** separating the contribution of the training recipe (+12.6 points), network depth (+0.3) and skip connections (+5.5).
 - **End-to-end ML pipeline:** dataset validation → stratified splitting → training → held-out evaluation → inference app.
 - **Data integrity checks:** every image is verified, and SHA-256 hashing detects duplicate images (3 cross-class duplicates found in TrashNet).
-- **Class imbalance handling:** inverse-frequency class weights computed from the training split only (the `trash` class has 4× fewer images than `paper`).
-- **Two from-scratch CNNs** compared under identical conditions; the model is selected on validation accuracy, and the test set is used **once** for the final score.
-- **Efficient input pipeline:** images are loaded lazily with `tf.data` and augmented inside the model graph (training only).
+- **Diagnosed unstable training** (validation accuracy swinging 35% ↔ 76% between epochs) and fixed it with a full cosine schedule and BatchNorm momentum tuning.
+- **GPU training on Google Colab** with a notebook that pins library versions and verifies the dataset by hash; models are evaluated and served locally.
 - **Streamlit app** showing the predicted class, confidence and the full probability breakdown.
 
 ---
 
 ## Results
 
-| Model | Recipe | Params | Input | Epochs | Train time | Val acc (saved model) | Test acc |
-|---|---|---|---|---|---|---|---|
-| Model A — Small CNN | v1 | 28.5K | 128 | 50 | 5.5 min (CPU) | 65.2% | not evaluated* |
-| Model B — Baseline CNN | v1 | 111K | 128 | 50 | 15.7 min (CPU) | 69.7% | 68.4% |
-| **Model C — Residual CNN** | **v3** | 1.23M | 160 | 100 | 10 min (T4 GPU) | **88.1%** | pending |
+### Final model: Model C (residual CNN, recipe v3)
 
-\* Test accuracy is measured only for a model chosen on validation accuracy, and only once. Model C's test evaluation will follow the ablation study.
+| Model | Recipe | Params | Input | Val acc (saved model) | **Test acc** | Test macro F1 |
+|---|---|---|---|---|---|---|
+| Model B — Baseline CNN | v1 | 111K | 128 | 69.7% | 68.4% | 0.66 |
+| **Model C — Residual CNN** | **v3** | 1.23M | 160 | 88.1% | **81.6%** | **0.82** |
 
-The sections below analyse Model B, the original baseline. Model C results are in [Model C](#model-c--residual-cnn).
+The test set (380 images) was used **once**, for the model chosen on validation accuracy. Test accuracy is 6.5 points below validation accuracy. Two reasons: the validation set guided several design decisions (recipe v2 → v3, model choice), which makes its score optimistic; and with 380 images the test score itself carries about ±4 points of sampling uncertainty (95% interval ≈ 77.7–85.5%). **81.6% is the honest number.**
 
-**Per-class test results (Model B, 380 test images):**
+**Per-class test results (380 images):**
 
-| Class | Precision | Recall | F1 | Support |
-|---|---|---|---|---|
-| cardboard | 0.89 | 0.92 | **0.90** | 60 |
-| paper | 0.71 | 0.87 | 0.78 | 89 |
-| plastic | 0.74 | 0.66 | 0.70 | 73 |
-| glass | 0.82 | 0.41 | 0.54 | 76 |
-| metal | 0.63 | 0.47 | 0.54 | 62 |
-| trash | 0.33 | 1.00 | 0.49 | 20 |
-| **macro avg** | 0.69 | 0.72 | 0.66 | 380 |
+| Class | Model B F1 | **Model C precision** | **Model C recall** | **Model C F1** | Support |
+|---|---|---|---|---|---|
+| cardboard | 0.90 | 0.93 | 0.90 | **0.92** | 60 |
+| paper | 0.78 | 0.76 | 0.93 | **0.84** | 89 |
+| trash | 0.49 | 0.78 | 0.90 | **0.84** | 20 |
+| glass | 0.54 | 0.90 | 0.68 | **0.78** | 76 |
+| metal | 0.54 | 0.83 | 0.73 | **0.78** | 62 |
+| plastic | 0.70 | 0.74 | 0.79 | **0.77** | 73 |
+| **macro avg** | 0.66 | 0.82 | 0.82 | **0.82** | 380 |
 
 <p align="center">
-  <img src="results/plots/confusion_matrix_model_b.png" width="48%" alt="Confusion matrix"/>
-  <img src="results/plots/per_class_f1_scores_model_b.png" width="48%" alt="Per-class F1"/>
+  <img src="results/plots/confusion_matrix_model_c_v3.png" width="48%" alt="Model C test confusion matrix"/>
+  <img src="results/plots/per_class_f1_scores_model_c_v3.png" width="48%" alt="Model C per-class F1"/>
 </p>
 
-### Analysis
+- Every class improved over Model B. The biggest gains are on **glass** and **metal** (F1 0.54 → 0.78) and **trash** (0.49 → 0.84, since trash is no longer over-predicted: precision 33% → 78%).
+- The remaining errors are between visually similar materials: plastic → paper (10), glass → metal (8), metal → plastic (8), glass → paper (7).
+- Glass recall (68%) is the weakest point: the model is careful about calling something glass (90% precision) but misses about a third of glass items.
 
-- **Cardboard and paper are easy.** They have a distinctive colour and texture (cardboard pixels average much more red than blue).
-- **Glass and metal are hard.** Glass is confused with plastic, metal and trash: reflective, transparent surfaces lose detail at 128×128.
-- **Trash is over-predicted.** The minority class weight (≈3.07×) gives perfect trash recall but only 33% precision. Tuning these weights is the next experiment.
-- **The models underfit rather than overfit.** Training and validation accuracy are both about 65–70% and still rising at epoch 50. Each output feature of the 3-block CNN only "sees" about a 22×22 pixel patch (its receptive field), so the models learn colour and texture but not whole-object shape. That motivates a deeper architecture (see [Roadmap](#roadmap)).
+### Ablation study: where did the improvement come from?
+
+All runs use the same splits, augmentation and class weights. Validation accuracy of the saved model:
+
+| Step | Model | Recipe | Params | Val acc | Change |
+|---|---|---|---|---|---|
+| 0 | Model B (3-layer CNN, 128 px) | v1 | 111K | 69.7% | baseline |
+| 1 | Model B | **v3** | 111K | 82.3% | **+12.6**: better training recipe |
+| 2 | Model C-plain (9 layers, 160 px, **no skips**) | v3 | 1.19M | 82.6% | **+0.3**: depth alone barely helps |
+| 3 | **Model C** (9 layers, 160 px, **skip connections**) | v3 | 1.23M | **88.1%** | **+5.5**: skip connections |
+
+**Findings**
+
+1. **The training recipe mattered most.** The same Model B went from 69.7% to 82.3% with a full cosine schedule, AdamW, label smoothing and BatchNorm momentum 0.9. The original models were undertrained more than undersized.
+2. **More depth without skip connections did not help.** C-plain has 10× more parameters than Model B but scored the same, and ended with lower training accuracy than Model C (87.8% vs 91.8%). The plain deep network is harder to *optimise*, which is the problem residual connections were designed to solve.
+3. **Skip connections made depth useful:** +5.5 points with almost the same parameter count.
+
+Caveats: each configuration was trained once, and repeated runs typically differ by 1–2 points, so the +12.6 and +5.5 gains are meaningful but +0.3 is effectively zero. Step 2 changes depth and input resolution together.
+
+### Baseline analysis (Model B, why it plateaued at ~68%)
+
+- **Glass and metal were hard.** Reflective, transparent surfaces lose detail at 128×128, and glass was confused with plastic, metal and trash.
+- **Trash was over-predicted.** The minority class weight (≈3.07×) gave perfect trash recall but only 33% precision. Recipe v2/v3 halves this weight.
+- **The models underfit.** Training and validation accuracy were both about 65–70% and still rising at epoch 50. Each output feature of the 3-block CNN only "sees" about a 22×22 pixel patch (its receptive field), so it learns colour and texture but not whole-object shape. This motivated Model C.
 
 <p align="center">
-  <img src="results/plots/training_curves_model_b.png" width="800" alt="Training curves for Model B"/>
+  <img src="results/plots/confusion_matrix_model_b.png" width="48%" alt="Model B test confusion matrix"/>
+  <img src="results/plots/training_curves_model_b.png" width="48%" alt="Training curves for Model B"/>
 </p>
 
 ---
@@ -136,7 +159,7 @@ Residual block: x → Conv3×3 → BN → ReLU → Conv3×3 → BN → (+ shortc
 | Receptive field of final features | ≈22 px | ≈22 px | ≈96 px |
 | Parameters | 28K | 111K | 1.23M |
 
-**Ablation:** `model_c_plain` is the same network without skip connections, to measure what the residual connections add.
+**Ablation:** `model_c_plain` is the same network without skip connections, to measure what the residual connections add (see [Ablation study](#ablation-study-where-did-the-improvement-come-from)).
 
 **Training recipes** (see `TRAINING_RECIPES` in [`src/config.py`](src/config.py)):
 
@@ -240,15 +263,17 @@ Open [`notebooks/train_colab.ipynb`](notebooks/train_colab.ipynb) in Colab ([dir
 - Trained on studio-style photos (one object on a plain background); accuracy on cluttered real-world photos will be lower.
 - Only 6 fixed categories; the model cannot say "unknown".
 - Softmax confidence is not a calibrated probability.
-- Small dataset (1,768 training images) and low input resolution (128×128).
+- Small dataset (1,768 training images) and modest input resolution (160×160).
+- Each configuration was trained once; results can vary by 1–2 points between runs.
 
 ---
 
 ## Roadmap
 
 - [x] **Model C — residual from-scratch CNN** (architecture, recipes v2/v3, Colab GPU notebook): 88.1% val accuracy
-- [ ] Ablation with recipe v3 (`model_b`, `model_c_plain`) to separate the effect of the recipe, depth and skip connections
-- [ ] Final test-set evaluation of the chosen model, and switch the Streamlit app to it
+- [x] Ablation with recipe v3 (`model_b`, `model_c_plain`): recipe +12.6, depth +0.3, skip connections +5.5
+- [x] Final test-set evaluation of Model C (81.6%) and Streamlit app switched to it
+- [ ] Repeat key runs with several seeds to report mean ± std
 - [ ] **Transfer learning** (MobileNetV2, EfficientNetB0) as a comparison baseline. See [`docs/transfer_learning_plan.md`](docs/transfer_learning_plan.md)
 - [ ] Evaluate all models on an unseen real-world dataset to measure generalisation
 - [ ] Model selector in the Streamlit app
