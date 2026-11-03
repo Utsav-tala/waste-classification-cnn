@@ -16,12 +16,12 @@ Classifying photos of waste into **6 recycling categories** (cardboard, glass, m
 ## Highlights
 
 - **81.6% test accuracy with a residual CNN built from scratch**, up from 68.4% for the baseline 3-layer CNN (same held-out test set of 380 images).
-- **Ablation study** separating the contribution of the training recipe (+12.6 points), network depth (+0.3) and skip connections (+5.5).
+- **Ablation study** separating the contribution of the training recipe, network depth and skip connections (test: +6.9, +3.4 and +2.9 points).
 - **End-to-end ML pipeline:** dataset validation → stratified splitting → training → held-out evaluation → inference app.
 - **Data integrity checks:** every image is verified, and SHA-256 hashing detects duplicate images (3 cross-class duplicates found in TrashNet).
 - **Diagnosed unstable training** (validation accuracy swinging 35% ↔ 76% between epochs) and fixed it with a full cosine schedule and BatchNorm momentum tuning.
 - **GPU training on Google Colab** with a notebook that pins library versions and verifies the dataset by hash; models are evaluated and served locally.
-- **Streamlit app** showing the predicted class, confidence and the full probability breakdown.
+- **Explainable Streamlit app:** Models A, B and C side by side with **Grad-CAM heatmaps**, live feature maps, convolution and pooling demos, and layer-by-layer architecture tables.
 
 ---
 
@@ -59,22 +59,23 @@ The test set (380 images) was used **once**, for the model chosen on validation 
 
 ### Ablation study: where did the improvement come from?
 
-All runs use the same splits, augmentation and class weights. Validation accuracy of the saved model:
+All runs use the same splits, augmentation and class weights. Model C was chosen on validation accuracy *before* any of these models were run on the test set; the test column was added afterwards for reporting only.
 
-| Step | Model | Recipe | Params | Val acc | Change |
-|---|---|---|---|---|---|
-| 0 | Model B (3-layer CNN, 128 px) | v1 | 111K | 69.7% | baseline |
-| 1 | Model B | **v3** | 111K | 82.3% | **+12.6**: better training recipe |
-| 2 | Model C-plain (9 layers, 160 px, **no skips**) | v3 | 1.19M | 82.6% | **+0.3**: depth alone barely helps |
-| 3 | **Model C** (9 layers, 160 px, **skip connections**) | v3 | 1.23M | **88.1%** | **+5.5**: skip connections |
+| Step | Model | Recipe | Params | Val acc | Test acc | Change (val / test) |
+|---|---|---|---|---|---|---|
+| – | Model A (3-layer CNN, 128 px) | v1 | 28K | 65.2% | 62.4% | smaller baseline |
+| 0 | Model B (3-layer CNN, 128 px) | v1 | 111K | 69.7% | 68.4% | baseline |
+| 1 | Model B | **v3** | 111K | 82.3% | 75.3% | **+12.6 / +6.9**: better training recipe |
+| 2 | Model C-plain (9 layers, 160 px, **no skips**) | v3 | 1.19M | 82.6% | 78.7% | **+0.3 / +3.4**: depth + resolution |
+| 3 | **Model C** (9 layers, 160 px, **skip connections**) | v3 | 1.23M | **88.1%** | **81.6%** | **+5.5 / +2.9**: skip connections |
 
 **Findings**
 
-1. **The training recipe mattered most.** The same Model B went from 69.7% to 82.3% with a full cosine schedule, AdamW, label smoothing and BatchNorm momentum 0.9. The original models were undertrained more than undersized.
-2. **More depth without skip connections did not help.** C-plain has 10× more parameters than Model B but scored the same, and ended with lower training accuracy than Model C (87.8% vs 91.8%). The plain deep network is harder to *optimise*, which is the problem residual connections were designed to solve.
-3. **Skip connections made depth useful:** +5.5 points with almost the same parameter count.
+1. **The training recipe mattered most.** The same Model B went from 69.7% to 82.3% validation (68.4% → 75.3% test) with a full cosine schedule, AdamW, label smoothing and BatchNorm momentum 0.9. The original models were undertrained more than undersized.
+2. **More depth without skip connections helped only a little.** C-plain has 10× more parameters than Model B: no gain on validation, +3.4 on test. It also ended with lower training accuracy than Model C (87.8% vs 91.8%). The plain deep network is harder to *optimise*, which is the problem residual connections were designed to solve.
+3. **Skip connections made depth useful:** +5.5 validation / +2.9 test with almost the same parameter count. Model C is the best model on both splits.
 
-Caveats: each configuration was trained once, and repeated runs typically differ by 1–2 points, so the +12.6 and +5.5 gains are meaningful but +0.3 is effectively zero. Step 2 changes depth and input resolution together.
+Caveats: each configuration was trained once, and with about 380 images per split a 2–3 point difference is within noise. The recipe gain is clear on both splits; the depth and skip-connection gains are consistent in direction but smaller on test. Step 2 changes depth and input resolution together. Validation accuracy is 4–7 points higher than test for every model, so the validation split also seems slightly easier.
 
 ### Baseline analysis (Model B, why it plateaued at ~68%)
 
@@ -196,7 +197,7 @@ Per-class validation recall improved most on the classes Model B struggled with:
 
 ```
 waste-classification-cnn/
-├── app.py                     # Streamlit web app
+├── app.py                     # Streamlit app: compare models, Grad-CAM, CNN explainers
 ├── requirements.txt
 ├── src/
 │   ├── config.py              # paths, classes, hyperparameters
@@ -204,7 +205,9 @@ waste-classification-cnn/
 │   ├── model.py               # Model A/B/C definitions, model registry, smoke test
 │   ├── train.py               # training CLI (models + recipe), curves, val confusion matrix
 │   ├── evaluate.py            # final test-set evaluation for a chosen run
-│   └── predict.py             # reusable single-image inference
+│   ├── predict.py             # reusable single-image inference
+│   └── explain.py             # Grad-CAM, feature maps, kernels, layer tables for the app
+├── assets/samples/            # 12 held-out test images used as app examples
 ├── notebooks/
 │   └── train_colab.ipynb      # GPU training on Google Colab
 ├── data/splits/               # train / val / test CSVs (file paths + labels)
@@ -236,7 +239,14 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Upload a JPG/PNG/WEBP photo of a waste item and click **Classify Waste**.
+Pick one of the 12 sample test images or upload your own photo. The app has four tabs:
+
+| Tab | What it shows |
+|---|---|
+| 🔍 Classify & Compare | Models A, B and C side by side: prediction, confidence, probability bars, **Grad-CAM heatmap**, and ✓/✗ against the true label for sample images |
+| 🧠 How a CNN Sees | Convolution (hand-made kernels on your image + Model C's 32 learned first-layer kernels), ReLU and BatchNorm, max pooling (worked example + real before/after maps), feature maps at every depth, the classifier head, skip connections, and how Grad-CAM works |
+| 🏗️ Architectures | Layer counts, pooling, receptive field and parameters for each model, plus a layer-by-layer table generated from the saved models |
+| 📊 Results | Test results for every model, the ablation study, Model C's confusion matrix and per-class F1, and training curves |
 
 ### 3. Reproduce training (optional)
 

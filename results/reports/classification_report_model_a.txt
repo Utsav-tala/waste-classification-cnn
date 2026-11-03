@@ -1,0 +1,15 @@
+Model evaluated: models/model_a_best.keras
+Test accuracy  : 0.6237
+
+              precision    recall  f1-score   support
+
+   cardboard       0.86      0.83      0.85        60
+       glass       0.73      0.32      0.44        76
+       metal       0.59      0.55      0.57        62
+       paper       0.69      0.75      0.72        89
+     plastic       0.54      0.62      0.58        73
+       trash       0.33      0.85      0.48        20
+
+    accuracy                           0.62       380
+   macro avg       0.62      0.65      0.61       380
+weighted avg       0.66      0.62      0.62       380
